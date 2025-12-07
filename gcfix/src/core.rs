@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, ops::AddAssign, os::unix::thread, path::PathBuf};
+use std::{cell::RefCell, collections::HashMap, ops::AddAssign, os::unix::thread, path::{Path, PathBuf}};
 
 use anyhow::{Error, anyhow};
 use crackle_kit::{
@@ -7,7 +7,7 @@ use crackle_kit::{
 };
 use ndarray::{Array2, ArrayBase, Dim, OwnedRepr};
 
-struct GCCounter {
+pub struct GCCounter {
     mapq: u8,
     start_len: i64,
     end_len: i64,
@@ -17,6 +17,24 @@ struct GCCounter {
 }
 
 impl GCCounter {
+    pub fn new(
+        mapq: u8,
+        start_len: i64,
+        end_len: i64,
+        reference_fasta: impl AsRef<Path>,
+        lag: usize,
+        bam_path: String,
+    ) -> Self {
+        Self {
+            mapq,
+            start_len,
+            end_len,
+            reference_genome_map,
+            lag,
+            bam_path,
+        }
+    }
+
     thread_local! {
         static BAM_MAP:RefCell<HashMap<String, IndexedReader>> = RefCell::new(
             HashMap::new()
@@ -24,7 +42,7 @@ impl GCCounter {
 
     }
 
-    fn count_gc(&self, fetch_region: &(&[u8], i64, i64)) -> Result<(), Error> {
+    pub fn count_gc(&self, fetch_region: &(&[u8], i64, i64)) -> Result<(), Error> {
         let mut res_arr =
             Array2::<u64>::zeros((self.end_len as usize - self.start_len as usize + 1, 101));
         Self::BAM_MAP.with_borrow_mut(|bam_map| {
