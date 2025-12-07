@@ -1,0 +1,31 @@
+[package]
+name = "gcfix"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+numpy = "0.27.1"
+pyo3 = { version = "0.27.2", features = ["auto-initialize"] }
+rayon = "1.11.0"
+crackle-kit = { git = "ssh://git@github.com/Crispy13/crackle-kit.git", features = ["bam"]}
+anyhow = "1.0.100"
+ndarray = "0.17.1"
+
+
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = 'thin'
+debug = "line-tables-only"
+
+[profile.debug-release]
+inherits = "release"
+debug = true
+
+[profile.deploy]
+inherits = "release"
+lto = true
+codegen-units = 1
+debug = false
