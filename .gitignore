@@ -1,2 +1,7 @@
 .vscode/settings.json
 gcfix/target
+NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam
+NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam.bai
+gcfix/fg.svg
+gcfix/*.npy
+gcfix/perf.*

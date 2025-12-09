@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
-use crackle_kit::tracing;
+use crackle_kit::tracing::{self, Level, event};
 use crackle_kit::{tracing::level_filters::LevelFilter, tracing_kit::setup_logging_stderr_only};
 use gcfix::core::GCCounter;
 use ndarray::Array2;
@@ -16,7 +16,9 @@ use numpy::IntoPyArray;
 use pyo3::{Python, types::PyAnyMethods};
 use rayon::{
     ThreadPoolBuilder,
-    iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator},
+    iter::{
+        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+    },
 };
 
 #[derive(Parser)]
@@ -55,15 +57,20 @@ struct Cli {
     /// Lag
     #[arg(short, long, default_value_t = 10)]
     lag: usize,
+    
+    /// Log level, Default: INFO
+    #[arg(long, default_value_t = LevelFilter::INFO)]
+    log_level: LevelFilter,
+
     // #[command(subcommand)]
     // command: Option<Commands>,
-    /// Log level, Default: INFO
-    #[arg(short, long, default_value_t = LevelFilter::INFO)]
-    log_level: LevelFilter,
 }
 
 fn main() -> Result<(), Error> {
     let cli = Cli::parse();
+
+    setup_logging_stderr_only(cli.log_level)?;
+
 
     let cgc = GCCounter::new(
         cli.mapq,
@@ -73,8 +80,6 @@ fn main() -> Result<(), Error> {
         cli.lag,
         cli.input_bam,
     )?;
-
-    setup_logging_stderr_only(cli.log_level)?;
 
     // build bin location vector
     let bin_location_vec = {
@@ -112,22 +117,35 @@ fn main() -> Result<(), Error> {
 
     let tp = ThreadPoolBuilder::new().num_threads(cli.threads).build()?;
 
+    let arr_iden_fn = || {
+        Array2::zeros(GCCounter::res_arr_shape(
+            cgc.start_len as usize,
+            cgc.end_len as usize,
+        ))
+    };
+
+    let chunk_size = (bin_location_vec.len() / cli.threads).min(64).max(1);
+
+    debug_assert!(chunk_size > 0);
+
+    event!(Level::DEBUG, "chunk_size={chunk_size}");
     let res_arr = tp.scope(|_s| {
         let r = bin_location_vec
             .par_iter()
-            .map(|r| cgc.count_gc(r))
-            .try_reduce(
-                || {
-                    Array2::zeros(GCCounter::res_arr_shape(
-                        cgc.start_len as usize,
-                        cgc.end_len as usize,
-                    ))
-                },
-                |mut a, b| {
-                    a.add_assign(&b);
-                    Ok(a)
-                },
-            )?;
+            .chunks(chunk_size)
+            .map(|b| {
+                let mut res_arr = arr_iden_fn();
+                b.into_iter().try_for_each(|r| {
+                    res_arr += &cgc.count_gc(r)?;
+                    Ok::<_, Error>(())
+                })?;
+
+                Ok::<_, Error>(res_arr)
+            })
+            .try_reduce(arr_iden_fn, |mut a, b| {
+                a.add_assign(&b);
+                Ok(a)
+            })?;
 
         Ok::<_, Error>(r)
     })?;
