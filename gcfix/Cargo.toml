@@ -11,7 +11,7 @@ crackle-kit = { git = "ssh://git@github.com/Crispy13/crackle-kit.git", features 
 anyhow = "1.0.100"
 ndarray = "0.17.1"
 clap = { version = "4.5.53", features = ["derive"] }
-polars = "0.52.0"
+# polars = {version = "0.51.*", features = ["lazy"]}
 
 
 

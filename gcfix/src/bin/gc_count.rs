@@ -1,9 +1,23 @@
-use std::path::PathBuf;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Read},
+    ops::AddAssign,
+    path::PathBuf,
+    str::{FromStr, Split},
+};
 
-use anyhow::Error;
+use anyhow::{Error, anyhow};
 use clap::Parser;
+use crackle_kit::tracing;
+use crackle_kit::{tracing::level_filters::LevelFilter, tracing_kit::setup_logging_stderr_only};
 use gcfix::core::GCCounter;
-use rayon::ThreadPoolBuilder;
+use ndarray::Array2;
+use numpy::IntoPyArray;
+use pyo3::{Python, types::PyAnyMethods};
+use rayon::{
+    ThreadPoolBuilder,
+    iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator},
+};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -41,9 +55,11 @@ struct Cli {
     /// Lag
     #[arg(short, long, default_value_t = 10)]
     lag: usize,
-
     // #[command(subcommand)]
     // command: Option<Commands>,
+    /// Log level, Default: INFO
+    #[arg(short, long, default_value_t = LevelFilter::INFO)]
+    log_level: LevelFilter,
 }
 
 fn main() -> Result<(), Error> {
@@ -56,14 +72,74 @@ fn main() -> Result<(), Error> {
         cli.reference_fasta,
         cli.lag,
         cli.input_bam,
-    );
+    )?;
+
+    setup_logging_stderr_only(cli.log_level)?;
+
+    // build bin location vector
+    let bin_location_vec = {
+        let mut res = Vec::with_capacity(48000);
+        let mut br = BufReader::new(File::open(&cli.bin_location_csv)?);
+        let mut buf = String::new();
+
+        // read first line. it's header.
+        br.read_line(&mut buf)?;
+
+        macro_rules! parse_pos {
+            ($spl:ident) => {{
+                let s = $spl.next().unwrap();
+                match s.parse::<i64>() {
+                    Ok(v) => Ok(v),
+                    Err(err) => Err(Error::from(err).context(s.to_owned())),
+                }
+            }};
+        }
+
+        while let Ok(true) = {
+            buf.clear();
+            br.read_line(&mut buf).map(|n| n > 0)
+        } {
+            let mut spl = buf.trim().split(",");
+            res.push((
+                spl.next().unwrap().to_owned(),
+                parse_pos!(spl)?,
+                parse_pos!(spl)?,
+            ));
+        }
+
+        res
+    };
+
     let tp = ThreadPoolBuilder::new().num_threads(cli.threads).build()?;
 
-    
-    tp.scope(|s| {
+    let res_arr = tp.scope(|_s| {
+        let r = bin_location_vec
+            .par_iter()
+            .map(|r| cgc.count_gc(r))
+            .try_reduce(
+                || {
+                    Array2::zeros(GCCounter::res_arr_shape(
+                        cgc.start_len as usize,
+                        cgc.end_len as usize,
+                    ))
+                },
+                |mut a, b| {
+                    a.add_assign(&b);
+                    Ok(a)
+                },
+            )?;
 
-    });
+        Ok::<_, Error>(r)
+    })?;
 
+    Python::attach(|py| {
+        let np = py.import("numpy")?;
+        let py_arr = res_arr.into_pyarray(py);
+
+        np.getattr("save")?.call1((cli.out_npy, py_arr))?;
+
+        Ok::<_, Error>(())
+    })?;
 
     Ok(())
 }
