@@ -58,6 +58,7 @@ def count_GC(sub_bin_locations):
                                 GC_content = float( GC_cnt/total_cnt )
                                 GC_content = round(round(GC_content, 2) * 100)
                                 GC_array[length-start_len][GC_content] += 1
+                                # print(f"processed: {read.query_name} {GC_content} {GC_cnt} {total_cnt}")
     return GC_array
 
 

@@ -5,3 +5,8 @@ NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam.bai
 gcfix/fg.svg
 gcfix/*.npy
 gcfix/perf.*
+
+py.txt
+py.txt.sort
+rs.txt
+rs.txt.sort

@@ -239,6 +239,8 @@ impl GCCounter {
                     gc_content
                 ))?,
             }
+
+            // println!("processed: {} {} {} {}", str::from_utf8(record.qname())?, gc_content, gc_cnt, total_cnt);
         }
 
         Ok(())
