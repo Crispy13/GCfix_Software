@@ -306,7 +306,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 [[package]]
 name = "crackle-kit"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Crispy13/crackle-kit.git#3656c7404811159364262d9ce4165a0c00d0b8f1"
+source = "git+https://github.com/Crispy13/crackle-kit#3656c7404811159364262d9ce4165a0c00d0b8f1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -881,7 +881,7 @@ dependencies = [
 [[package]]
 name = "macro_impl"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Crispy13/crackle-kit.git#3656c7404811159364262d9ce4165a0c00d0b8f1"
+source = "git+https://github.com/Crispy13/crackle-kit#3656c7404811159364262d9ce4165a0c00d0b8f1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -891,7 +891,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Crispy13/crackle-kit.git#3656c7404811159364262d9ce4165a0c00d0b8f1"
+source = "git+https://github.com/Crispy13/crackle-kit#3656c7404811159364262d9ce4165a0c00d0b8f1"
 dependencies = [
  "macro_impl",
 ]

@@ -7,7 +7,7 @@ edition = "2024"
 numpy = "0.27.1"
 pyo3 = { version = "0.27.2", features = ["auto-initialize"] }
 rayon = "1.11.0"
-crackle-kit = { git = "ssh://git@github.com/Crispy13/crackle-kit.git", features = [
+crackle-kit = { git = "https://github.com/Crispy13/crackle-kit", features = [
     "bam",
 ] }
 anyhow = "1.0.100"
