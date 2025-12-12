@@ -8,7 +8,11 @@ use std::{
 
 use anyhow::{Error, anyhow};
 use clap::Parser;
-use crackle_kit::tracing::{self, Level, event};
+use crackle_kit::{
+    indicatif,
+    pbar::prepare_pbar,
+    tracing::{self, Level, event},
+};
 use crackle_kit::{tracing::level_filters::LevelFilter, tracing_kit::setup_logging_stderr_only};
 use gcfix::core::GCCounter;
 use ndarray::Array2;
@@ -57,11 +61,14 @@ struct Cli {
     /// Lag
     #[arg(short, long, default_value_t = 10)]
     lag: usize,
-    
+
     /// Log level, Default: INFO
     #[arg(long, default_value_t = LevelFilter::INFO)]
     log_level: LevelFilter,
 
+    /// Disable progress bar
+    #[arg(long)]
+    disable_pbar: bool,
     // #[command(subcommand)]
     // command: Option<Commands>,
 }
@@ -70,7 +77,6 @@ fn main() -> Result<(), Error> {
     let cli = Cli::parse();
 
     setup_logging_stderr_only(cli.log_level)?;
-
 
     let cgc = GCCounter::new(
         cli.mapq,
@@ -82,6 +88,7 @@ fn main() -> Result<(), Error> {
     )?;
 
     // build bin location vector
+    event!(Level::INFO, "Getting bin location information...");
     let bin_location_vec = {
         let mut res = Vec::with_capacity(48000);
         let mut br = BufReader::new(File::open(&cli.bin_location_csv)?);
@@ -129,16 +136,29 @@ fn main() -> Result<(), Error> {
     debug_assert!(chunk_size > 0);
 
     event!(Level::DEBUG, "chunk_size={chunk_size}");
+
+    event!(Level::INFO, "Calculating counts...");
+    let pbar = if !cli.disable_pbar {
+        prepare_pbar(bin_location_vec.len() as u64)
+    } else {
+        indicatif::ProgressBar::hidden()
+    };
+
     let res_arr = tp.scope(|_s| {
         let r = bin_location_vec
             .par_iter()
             .chunks(chunk_size)
             .map(|b| {
                 let mut res_arr = arr_iden_fn();
+
+                let len_batch = b.len();
+
                 b.into_iter().try_for_each(|r| {
                     res_arr += &cgc.count_gc(r)?;
                     Ok::<_, Error>(())
                 })?;
+
+                pbar.inc(len_batch as u64);
 
                 Ok::<_, Error>(res_arr)
             })
@@ -150,14 +170,20 @@ fn main() -> Result<(), Error> {
         Ok::<_, Error>(r)
     })?;
 
+    pbar.finish();
+
+    event!(Level::INFO, "Writing npy file...");
     Python::attach(|py| {
         let np = py.import("numpy")?;
         let py_arr = res_arr.into_pyarray(py);
 
-        np.getattr("save")?.call1((cli.out_npy, py_arr))?;
+        np.getattr("save")?.call1((&cli.out_npy, py_arr))?;
 
         Ok::<_, Error>(())
     })?;
+
+    event!(Level::INFO, "Done.");
+    event!(Level::INFO, "Out file: {}", cli.out_npy);
 
     Ok(())
 }

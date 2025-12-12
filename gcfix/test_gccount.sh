@@ -8,7 +8,7 @@ out_npy="$(basename $input_bam).npy"
 cargo build --release
 
 # command time -v \
-hyperfine --warmup 3 "\
+# hyperfine --warmup 3 "\
 cargo run --release -- \
     $input_bam \
     $out_npy \
@@ -20,5 +20,5 @@ cargo run --release -- \
     -t 8 \
     --lag 10 \
     --log-level DEBUG \
-"
+# "
 # ../Input_Bam/sample1.bam \
