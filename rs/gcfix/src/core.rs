@@ -19,6 +19,12 @@ use crackle_kit::{
     tracing::{Level, event},
 };
 use ndarray::{Array, Array2, ArrayBase, Dim, OwnedRepr};
+use rayon::{
+    ThreadPoolBuilder,
+    iter::{
+        IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+    },
+};
 
 #[derive(Clone, Copy, Debug)]
 enum ContigNameFormat {
@@ -367,6 +373,7 @@ pub struct WeightedFragmentCollector {
     start_len: usize,
     end_len: usize,
     reference_seq_map: HashMap<String, Vec<u8>>,
+    threads: usize,
 }
 
 impl WeightedFragmentCollector {
@@ -376,6 +383,7 @@ impl WeightedFragmentCollector {
         start_len: usize,
         end_len: usize,
         reference_fasta: impl AsRef<Path>,
+        threads: usize,
     ) -> Result<Self, Error> {
         let reference_seq_map = make_ref_seq_map(reference_fasta, ContigNameFormat::WithChr)?;
 
@@ -391,7 +399,55 @@ impl WeightedFragmentCollector {
         })
     }
 
-    fn make_fs_and_correction_weight_arrs(&self, bam_path: impl AsRef<Path>) {}
+    fn make_fs_and_correction_weight_arrs(
+        &self,
+        bam_path: impl AsRef<Path> + Sync + Send,
+        regions: &[(&str, i64, i64)],
+    ) -> Result<Vec<(Array2<i32>, Array2<f64>)>, Error> {
+        let tp = ThreadPoolBuilder::new().num_threads(self.threads).build()?;
+
+        let chunk_size = (regions.len() / self.threads).min(64).max(1);
+
+        let ir_init = || IndexedReader::from_path(&bam_path);
+        let res_vec = tp.install(|| {
+            let r = regions
+                .par_iter()
+                .chunks(chunk_size)
+                .map_init(ir_init, |ir_state, chunk| {
+                    let ir = match ir_state {
+                        Ok(v) => v,
+                        Err(err) => Err(anyhow!(
+                            "Failed to load bam: {err:?} {}",
+                            bam_path.as_ref().display()
+                        ))?,
+                    };
+
+                    let mut res = Vec::with_capacity(chunk.len());
+                    for &region in chunk {
+                        res.push(Self::make_fs_and_correction_weight_arrs_for_region(
+                            ir, region,
+                        )?);
+                    }
+
+                    Ok::<_, Error>(res)
+                })
+                .collect::<Result<Vec<_>, Error>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+
+            Ok::<_, Error>(r)
+        })?;
+
+        Ok(res_vec)
+    }
+
+    fn make_fs_and_correction_weight_arrs_for_region(
+        bam_reader: &mut IndexedReader,
+        region: (&str, i64, i64),
+    ) -> Result<(Array2<i32>, Array2<f64>), Error> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
