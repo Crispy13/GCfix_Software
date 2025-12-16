@@ -144,7 +144,7 @@ fn main() -> Result<(), Error> {
         indicatif::ProgressBar::hidden()
     };
 
-    let res_arr = tp.scope(|_s| {
+    let res_arr = tp.install(|| {
         let r = bin_location_vec
             .par_iter()
             .chunks(chunk_size)

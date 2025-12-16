@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rand::Rng;
 
 // Method 1: The Original (to_ascii_lowercase)
@@ -44,10 +44,14 @@ fn count_gc_direct_match(seq: &[u8]) -> (usize, usize) {
 const GC_TABLE: [u8; 256] = {
     let mut table = [0; 256];
     // Mark GC as 1, AT as 2, others 0
-    table[b'G' as usize] = 1; table[b'g' as usize] = 1;
-    table[b'C' as usize] = 1; table[b'c' as usize] = 1;
-    table[b'A' as usize] = 2; table[b'a' as usize] = 2;
-    table[b'T' as usize] = 2; table[b't' as usize] = 2;
+    table[b'G' as usize] = 1;
+    table[b'g' as usize] = 1;
+    table[b'C' as usize] = 1;
+    table[b'c' as usize] = 1;
+    table[b'A' as usize] = 2;
+    table[b'a' as usize] = 2;
+    table[b'T' as usize] = 2;
+    table[b't' as usize] = 2;
     table
 };
 

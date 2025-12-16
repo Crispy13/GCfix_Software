@@ -2,6 +2,8 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader},
     ops::AddAssign,
     os::unix::thread,
     path::{Path, PathBuf},
@@ -18,7 +20,7 @@ use crackle_kit::{
 };
 use ndarray::{Array, Array2, ArrayBase, Dim, OwnedRepr};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum ContigNameFormat {
     WithChr,
     WithoutChr,
@@ -43,6 +45,26 @@ impl ContigNameFormat {
             }
         }
     }
+}
+
+fn make_ref_seq_map(
+    reference_fasta: impl AsRef<Path>,
+    contig_name_format: ContigNameFormat,
+) -> Result<HashMap<String, Vec<u8>>, Error> {
+    let fr = faidx::Reader::from_path(reference_fasta)?;
+
+    let seq_names = fr.seq_names()?;
+    let mut reference_genome_map = HashMap::with_capacity(seq_names.len());
+    for seq_name in seq_names.iter() {
+        reference_genome_map.insert(
+            contig_name_format
+                .contig_name_for_ref(&seq_name)
+                .into_owned(),
+            fr.fetch_seq(seq_name, 0, fr.fetch_seq_len(seq_name) as usize)?,
+        );
+    }
+
+    Ok(reference_genome_map)
 }
 
 #[derive(Clone)]
@@ -90,18 +112,7 @@ impl GCCounter {
 
         event!(Level::DEBUG, "contig_name_format={contig_name_format:?}");
 
-        let fr = faidx::Reader::from_path(reference_fasta)?;
-
-        let seq_names = fr.seq_names()?;
-        let mut reference_genome_map = HashMap::with_capacity(seq_names.len());
-        for seq_name in seq_names.iter() {
-            reference_genome_map.insert(
-                contig_name_format
-                    .contig_name_for_ref(&seq_name)
-                    .into_owned(),
-                fr.fetch_seq(seq_name, 0, fr.fetch_seq_len(seq_name) as usize)?,
-            );
-        }
+        let reference_genome_map = make_ref_seq_map(reference_fasta, contig_name_format)?;
 
         Ok(Self {
             mapq,
@@ -251,7 +262,7 @@ impl GCCounter {
 fn python_round_logic(gc_cnt: i32, total_cnt: i32) -> usize {
     let ratio = gc_cnt as f64 / total_cnt as f64;
     let val_x100 = ratio * 100.0;
-    
+
     let rounded = val_x100.round();
     let diff = rounded - val_x100;
 
@@ -297,6 +308,92 @@ fn integer_bankers_round(gc_cnt: i32, total_cnt: i32) -> usize {
         }
     }
 }
+
+fn make_correction_weight_arr(
+    correction_weights_csv: impl AsRef<Path>,
+    start_len: usize,
+    end_len: usize,
+) -> Result<Array2<f64>, Error> {
+    let mut buf = String::new();
+    let mut br = BufReader::new(File::open(correction_weights_csv)?);
+
+    // parse first line
+    if let Ok(true) = br.read_line(&mut buf).map(|n| n > 0) {
+        let col_count = buf.trim().split(",").count();
+        if col_count != 101 {
+            Err(anyhow!("Expected 101 cols, but {col_count}"))?
+        }
+    }
+
+    let n_rows = end_len - start_len + 1;
+    let mut weights = Vec::with_capacity(101 * n_rows);
+    let mut l_iter = start_len..(end_len + 1);
+
+    while let Ok(true) = {
+        buf.clear();
+        br.read_line(&mut buf).map(|n| n > 0)
+    } {
+        l_iter.next().ok_or_else(|| {
+            anyhow!(
+                "Input file has extra lines exceeding the expected: {}.",
+                end_len - start_len + 1
+            )
+        })?;
+
+        for v in buf.trim().split(",") {
+            weights.push({
+                match v.parse::<f64>() {
+                    Ok(f) => f,
+                    Err(err) => Err(Error::from(err).context(v.to_string()))?,
+                }
+            });
+        }
+    }
+
+    if l_iter.next().is_some() {
+        Err(anyhow!(
+            "Input file is too short. It does not cover the full range from {} to {}.",
+            start_len,
+            end_len
+        ))?
+    }
+
+    Ok(Array2::from_shape_vec((n_rows, 101), weights)?)
+}
+
+/// Make an array of fragment sizes, and an array of GC-fragment size correction weights.
+pub struct WeightedFragmentCollector {
+    correction_weights_arr: ndarray::Array2<f64>,
+    start_len: usize,
+    end_len: usize,
+    reference_seq_map: HashMap<String, Vec<u8>>,
+}
+
+impl WeightedFragmentCollector {
+    /// `start_len` and `end_len` are inclusive.
+    pub fn new(
+        correction_weights_csv: impl AsRef<Path>,
+        start_len: usize,
+        end_len: usize,
+        reference_fasta: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        let reference_seq_map = make_ref_seq_map(reference_fasta, ContigNameFormat::WithChr)?;
+
+        // build correction_weights_arr
+        let correction_weights_arr =
+            make_correction_weight_arr(correction_weights_csv, start_len, end_len)?;
+
+        Ok(Self {
+            correction_weights_arr,
+            start_len,
+            end_len,
+            reference_seq_map,
+        })
+    }
+
+    fn make_fs_and_correction_weight_arrs(&self, bam_path: impl AsRef<Path>) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,11 +425,11 @@ mod tests {
         // 3/40 = 7.5% -> Round to Even (8)
         // Python: round(7.5) -> 8
         assert_eq!(integer_bankers_round(3, 40), 8, "Failed 7.5% -> 8");
-        
+
         // 1/200 = 0.5% -> Round to Even (0)
         // Python: round(0.5) -> 0
         assert_eq!(integer_bankers_round(1, 200), 0, "Failed 0.5% -> 0");
-        
+
         // 3/200 = 1.5% -> Round to Even (2)
         // Python: round(1.5) -> 2
         assert_eq!(integer_bankers_round(3, 200), 2, "Failed 1.5% -> 2");
@@ -344,7 +441,7 @@ mod tests {
 
         // 2/3 = 66.66% -> 67
         assert_eq!(integer_bankers_round(2, 3), 67, "Failed 66.6%");
-        
+
         // 1/2 = 50% (Exact)
         assert_eq!(integer_bankers_round(1, 2), 50, "Failed 50%");
     }
@@ -379,15 +476,30 @@ mod tests {
 
         // Case 7: 2/3 = 66.666...% (Standard rounding up)
         assert_eq!(python_round_logic(2, 3), 67, "Failed 66.6%");
-        
+
         // Case 8: 0.5% (Very small) -> 0.005 * 100 = 0.5 -> rounds to 0 (even)
         // Constructing 0.5% is hard with integers, let's use 1/200 = 0.005 -> 0.5%
         assert_eq!(python_round_logic(1, 200), 0, "Failed 0.5% -> 0");
-        
+
         // Case 9: 1.5% -> 3/200 = 0.015 -> 1.5% -> rounds to 2 (even)
-        assert_eq!(python_round_logic(3, 200), 2, "Faile
-        d 1.5% -> 2");
+        assert_eq!(
+            python_round_logic(3, 200),
+            2,
+            "Faile
+        d 1.5% -> 2"
+        );
+    }
+
+    #[test]
+    fn test_make_correction_weight_arr() -> Result<(), Box<dyn std::error::Error>> {
+        let correction_weights_csv = "../../Sample_Output/Correction_Factors/test.csv";
+        let start_len = 51;
+        let end_len = 55;
+
+        let arr = make_correction_weight_arr(correction_weights_csv, start_len, end_len)?;
+
+        eprintln!("{arr:?}");
+
+        Ok(())
     }
 }
-
-
