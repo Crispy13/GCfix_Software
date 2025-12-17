@@ -136,9 +136,9 @@ checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
 name = "bumpalo"
-version = "3.19.0"
+version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
+checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "byteorder"
@@ -295,9 +295,9 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "console"
-version = "0.16.1"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b430743a6eb14e9764d4260d4c0d8123087d504eeb9c48f2b2a5e810dd369df4"
+checksum = "03e45a4a8926227e4197636ba97a9fc9b00477e9f4bd711395687c5f0734bec4"
 dependencies = [
  "encode_unicode",
  "libc",
@@ -577,7 +577,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "hts-sys"
 version = "2.2.0"
-source = "git+https://github.com/Crispy13/hts-sys.git?branch=hts-latest#d28c7f23d5ad5ffd031f897369a4578c78a7d958"
+source = "git+https://github.com/Crispy13/hts-sys.git?tag=htslib-v1.23#e4f553ba152707312c9f460e7ad89b48b6e4cefa"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -1310,7 +1310,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "rust-htslib"
 version = "0.51.0"
-source = "git+https://github.com/Crispy13/rust-htslib?branch=dev#d8a5f74caddde878b53aa20e17bb1a300dc866ea"
+source = "git+https://github.com/Crispy13/rust-htslib?branch=dev#f3752ff801207e8513ecf745a04437f8bff81557"
 dependencies = [
  "bio-types",
  "byteorder",

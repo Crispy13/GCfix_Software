@@ -1,24 +1,27 @@
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
+    i32,
     io::{BufRead, BufReader},
     ops::AddAssign,
     os::unix::thread,
     path::{Path, PathBuf},
 };
 
+use std::fmt::Write;
+
 use anyhow::{Error, anyhow};
 use crackle_kit::{
     data::locus::GenomeRegion,
     rust_htslib::{
-        bam::{IndexedReader, Read, Record, ext::BamRecordExtensions as _},
+        bam::{IndexedReader, Read, Record, ext::BamRecordExtensions as _, pileup::PileupOption},
         faidx,
     },
     tracing::{Level, event},
 };
-use ndarray::{Array, Array2, ArrayBase, Dim, OwnedRepr};
+use ndarray::{Array, Array1, Array2, ArrayBase, Dim, OwnedRepr};
 use rayon::{
     ThreadPoolBuilder,
     iter::{
@@ -167,6 +170,31 @@ impl GCCounter {
         Ok(res_arr)
     }
 
+    #[inline]
+    fn should_record_be_filtered_out(record: &Record) -> bool {
+        record.is_unmapped()
+            || record.is_mate_unmapped()
+            || record.is_duplicate()
+            || record.is_supplementary()
+    }
+
+    #[inline]
+    fn ref_start_and_end_pos_for_gc(
+        record: &Record,
+        insert_size: i64,
+        lag: usize,
+    ) -> (usize, usize) {
+        let ref_start = record.reference_start() as usize + lag;
+        let ref_end = (record.reference_start() + insert_size) as usize - lag;
+
+        (ref_start, ref_end)
+    }
+
+    #[inline]
+    fn is_insert_size_not_target(insert_size: i64, start_len: i64, end_len: i64) -> bool {
+        insert_size < start_len || insert_size > end_len
+    }
+
     fn _count_gc(
         &self,
         fetch_region: &(String, i64, i64),
@@ -192,11 +220,7 @@ impl GCCounter {
         while let Some(rr) = ir.read(&mut record) {
             rr?;
 
-            if record.is_unmapped()
-                || record.is_mate_unmapped()
-                || record.is_duplicate()
-                || record.is_supplementary()
-            {
+            if Self::should_record_be_filtered_out(&record) {
                 continue;
             }
 
@@ -204,13 +228,13 @@ impl GCCounter {
                 continue;
             }
 
-            let length = record.insert_size();
-            if length < self.start_len || length > self.end_len {
+            let insert_size = record.insert_size();
+            if Self::is_insert_size_not_target(insert_size, self.start_len, self.end_len) {
                 continue;
             }
 
-            let ref_start = record.reference_start() as usize + self.lag;
-            let ref_end = (record.reference_start() + length) as usize - self.lag;
+            let (ref_start, ref_end) =
+                Self::ref_start_and_end_pos_for_gc(&record, insert_size, self.lag);
 
             if ref_end <= ref_start {
                 // if insert size is very low. length <= 2*lag.
@@ -248,11 +272,11 @@ impl GCCounter {
             // let gc_content = (gc_cnt as f64 / total_cnt as f64 * 100.0).round() as usize;
             let gc_content = integer_bankers_round(gc_cnt, total_cnt);
 
-            match res_arr.get_mut(((length - self.start_len) as usize, gc_content)) {
+            match res_arr.get_mut(((insert_size - self.start_len) as usize, gc_content)) {
                 Some(elem) => elem.add_assign(1),
                 None => Err(anyhow!(
                     "Failed to get elem with index:({},{}) from result array.",
-                    (length - self.start_len),
+                    (insert_size - self.start_len),
                     gc_content
                 ))?,
             }
@@ -374,14 +398,18 @@ pub struct WeightedFragmentCollector {
     end_len: usize,
     reference_seq_map: HashMap<String, Vec<u8>>,
     threads: usize,
+    lag: usize,
 }
 
 impl WeightedFragmentCollector {
+    const NA_WEIGHT: f64 = -1.0;
+
     /// `start_len` and `end_len` are inclusive.
     pub fn new(
         correction_weights_csv: impl AsRef<Path>,
         start_len: usize,
         end_len: usize,
+        lag: usize,
         reference_fasta: impl AsRef<Path>,
         threads: usize,
     ) -> Result<Self, Error> {
@@ -396,21 +424,23 @@ impl WeightedFragmentCollector {
             start_len,
             end_len,
             reference_seq_map,
+            threads,
+            lag,
         })
     }
 
     fn make_fs_and_correction_weight_arrs(
         &self,
         bam_path: impl AsRef<Path> + Sync + Send,
-        regions: &[(&str, i64, i64)],
+        region_infos: &[((&str, i64), &HashSet<&str>)],
     ) -> Result<Vec<(Array2<i32>, Array2<f64>)>, Error> {
         let tp = ThreadPoolBuilder::new().num_threads(self.threads).build()?;
 
-        let chunk_size = (regions.len() / self.threads).min(64).max(1);
+        let chunk_size = (region_infos.len() / self.threads).min(64).max(1);
 
         let ir_init = || IndexedReader::from_path(&bam_path);
         let res_vec = tp.install(|| {
-            let r = regions
+            let r = region_infos
                 .par_iter()
                 .chunks(chunk_size)
                 .map_init(ir_init, |ir_state, chunk| {
@@ -423,9 +453,21 @@ impl WeightedFragmentCollector {
                     };
 
                     let mut res = Vec::with_capacity(chunk.len());
-                    for &region in chunk {
+
+                    for &(region, separate_read_names) in chunk {
                         res.push(Self::make_fs_and_correction_weight_arrs_for_region(
-                            ir, region,
+                            ir,
+                            region,
+                            separate_read_names,
+                            self.reference_seq_map.get(region.0).ok_or_else(|| {
+                                anyhow!(
+                                    "Contig key not found in reference sequence map: {}",
+                                    region.0
+                                )
+                            })?,
+                            self.start_len,
+                            self.end_len,
+                            self.lag,
                         )?);
                     }
 
@@ -441,11 +483,149 @@ impl WeightedFragmentCollector {
 
         Ok(res_vec)
     }
+}
 
+struct WeightedFragmentCollectorWorker {
+    read_name_buf: String,
+    group_a_fs_buf: Vec<i32>,
+    group_a_weight_buf: Vec<f64>,
+    group_b_fs_buf: Vec<i32>,
+    group_b_weight_buf: Vec<f64>,
+}
+
+impl WeightedFragmentCollectorWorker {
     fn make_fs_and_correction_weight_arrs_for_region(
+        &mut self,
         bam_reader: &mut IndexedReader,
-        region: (&str, i64, i64),
-    ) -> Result<(Array2<i32>, Array2<f64>), Error> {
+        correction_weights_arr: &ndarray::Array2<f64>,
+        region: (&str, i64),
+        group_a_read_names: &HashSet<&str>,
+        contig_ref_seq: &[u8],
+        start_len: usize,
+        end_len: usize,
+        lag: usize,
+    ) -> Result<[(Array1<i32>, Array1<f64>); 2], Error> {
+        let contig = region.0;
+        let pos_0b = region.1 - 1;
+        bam_reader.fetch((contig, pos_0b, pos_0b + 1))?;
+
+        let read_name_buf = &mut self.read_name_buf;
+        let group_a_fs_buf = &mut self.group_a_fs_buf;
+        let group_a_weight_buf = &mut self.group_a_weight_buf;
+        let group_b_fs_buf = &mut self.group_b_fs_buf;
+        let group_b_weight_buf = &mut self.group_b_weight_buf;
+
+        for pr in bam_reader.pileup_with_option(PileupOption {
+            max_depth: i32::MAX,
+            ignore_overlaps: true,
+        }) {
+            let plp = pr?;
+
+            if plp.pos() as i64 != pos_0b {
+                continue;
+            }
+
+            for algmt in plp.alignments() {
+                let record = algmt.record();
+
+                read_name_buf.clear();
+                write!(
+                    read_name_buf,
+                    "{}/{}",
+                    str::from_utf8(record.qname())?,
+                    if !record.is_reverse() { "1" } else { "2" } // TODO: check read name prefix logic. FR or read1 read2?
+                )?;
+
+                let push_fs_and_weight = |fs_buf: &mut Vec<i32>, weight_buf: &mut Vec<f64>| {
+                    let insert_size_abs = record.insert_size().abs();
+
+                    let mut weight = WeightedFragmentCollector::NA_WEIGHT;
+
+
+                    'weight_calc: {
+                        let (ref_start, ref_end) =
+                            GCCounter::ref_start_and_end_pos_for_gc(&record, insert_size_abs, lag);
+
+                        if ref_end <= ref_start {
+                            // if insert size is very low. length <= 2*lag.
+                            break 'weight_calc;
+                        }
+
+                        let ref_seq = contig_ref_seq.get(ref_start..ref_end).ok_or_else(|| {
+                            anyhow!(
+                                "Failed to get slice with index: {ref_start}..{ref_end}. contig={}",
+                                region.0
+                            )
+                        })?;
+
+                        if ref_seq.len() == 0 {
+                            break 'weight_calc;
+                        }
+
+                        let mut gc_cnt = 0;
+                        let mut at_cnt = 0;
+                        for &b in ref_seq {
+                            match GCCounter::GC_TABLE[b as usize] {
+                                1 => gc_cnt += 1,
+                                2 => at_cnt += 1,
+                                _ => {}
+                            }
+                        }
+
+                        let total_cnt = gc_cnt + at_cnt;
+                        let valid_percent = total_cnt as f64 / ref_seq.len() as f64;
+
+                        if valid_percent < 0.9 {
+                            break 'weight_calc;
+                        }
+
+                        // let gc_content = (gc_cnt as f64 / total_cnt as f64 * 100.0).round() as usize;
+                        let gc_content = integer_bankers_round(gc_cnt, total_cnt);
+
+                        match correction_weights_arr
+                            .get((insert_size_abs as usize - start_len, gc_content))
+                            .copied()
+                        {
+                            Some(v) => weight = v,
+                            None => Err(anyhow!(
+                                "Failed to index weight with index: {:?}",
+                                (insert_size_abs as usize - start_len, gc_content)
+                            ))?,
+                        }
+                    }
+
+                    fs_buf.push(insert_size_abs as i32);
+                    weight_buf.push(weight);
+
+                    Ok::<_, Error>(())
+                };
+
+                if group_a_read_names.contains(read_name_buf.as_str()) {
+                    // always include this read. we won't check the rest filters.
+                    push_fs_and_weight(group_a_fs_buf, group_a_weight_buf)?;
+                } else {
+                    // TODO: The same record filter logic as variant caller is needed.
+                    if Self::should_record_be_filtered_out(&record) {
+                        continue;
+                    }
+                    push_fs_and_weight(group_b_fs_buf, group_b_weight_buf)?;
+                };
+            }
+        }
+
+        Ok([
+            (
+                Array1::from_iter(group_a_fs_buf.drain(..)),
+                Array1::from_iter(group_a_weight_buf.drain(..)),
+            ),
+            (
+                Array1::from_iter(group_b_fs_buf.drain(..)),
+                Array1::from_iter(group_b_weight_buf.drain(..)),
+            ),
+        ])
+    }
+
+    fn should_record_be_filtered_out(record: &Record) -> bool {
         todo!()
     }
 }
