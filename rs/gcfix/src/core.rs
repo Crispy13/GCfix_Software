@@ -432,7 +432,7 @@ impl WeightedFragmentCollector {
     fn make_fs_and_correction_weight_arrs(
         &self,
         bam_path: impl AsRef<Path> + Sync + Send,
-        region_infos: &[((&str, i64), &HashSet<&str>)],
+        region_infos: &[((&str, i64), &HashSet<&[u8]>)],
     ) -> Result<Vec<(Array2<i32>, Array2<f64>)>, Error> {
         let tp = ThreadPoolBuilder::new().num_threads(self.threads).build()?;
 
@@ -452,11 +452,14 @@ impl WeightedFragmentCollector {
                         ))?,
                     };
 
+                    let mut worker = WeightedFragmentCollectorWorker::default();
+
                     let mut res = Vec::with_capacity(chunk.len());
 
                     for &(region, separate_read_names) in chunk {
-                        res.push(Self::make_fs_and_correction_weight_arrs_for_region(
+                        res.push(worker.make_fs_and_correction_weight_arrs_for_region(
                             ir,
+                            &self.correction_weights_arr,
                             region,
                             separate_read_names,
                             self.reference_seq_map.get(region.0).ok_or_else(|| {
@@ -485,8 +488,9 @@ impl WeightedFragmentCollector {
     }
 }
 
+#[derive(Default)]
 struct WeightedFragmentCollectorWorker {
-    read_name_buf: String,
+    read_name_buf: Vec<u8>,
     group_a_fs_buf: Vec<i32>,
     group_a_weight_buf: Vec<f64>,
     group_b_fs_buf: Vec<i32>,
@@ -499,7 +503,7 @@ impl WeightedFragmentCollectorWorker {
         bam_reader: &mut IndexedReader,
         correction_weights_arr: &ndarray::Array2<f64>,
         region: (&str, i64),
-        group_a_read_names: &HashSet<&str>,
+        group_a_read_names: &HashSet<&[u8]>,
         contig_ref_seq: &[u8],
         start_len: usize,
         end_len: usize,
@@ -529,12 +533,9 @@ impl WeightedFragmentCollectorWorker {
                 let record = algmt.record();
 
                 read_name_buf.clear();
-                write!(
-                    read_name_buf,
-                    "{}/{}",
-                    str::from_utf8(record.qname())?,
-                    if !record.is_reverse() { "1" } else { "2" } // TODO: check read name prefix logic. FR or read1 read2?
-                )?;
+                read_name_buf.extend(record.qname());
+                let suffix = if record.is_first_in_template() { b"/1" } else { b"/2" };
+                read_name_buf.extend(suffix);
 
                 let push_fs_and_weight = |fs_buf: &mut Vec<i32>, weight_buf: &mut Vec<f64>| {
                     let insert_size_abs = record.insert_size().abs();
@@ -582,14 +583,19 @@ impl WeightedFragmentCollectorWorker {
                         // let gc_content = (gc_cnt as f64 / total_cnt as f64 * 100.0).round() as usize;
                         let gc_content = integer_bankers_round(gc_cnt, total_cnt);
 
+                        let row_index = match (insert_size_abs as usize).checked_sub(start_len) {
+                            Some(v) => v,
+                            None => break 'weight_calc,
+                        };
+
                         match correction_weights_arr
-                            .get((insert_size_abs as usize - start_len, gc_content))
+                            .get((row_index, gc_content))
                             .copied()
                         {
                             Some(v) => weight = v,
                             None => Err(anyhow!(
                                 "Failed to index weight with index: {:?}",
-                                (insert_size_abs as usize - start_len, gc_content)
+                                (row_index, gc_content)
                             ))?,
                         }
                     }
@@ -600,7 +606,7 @@ impl WeightedFragmentCollectorWorker {
                     Ok::<_, Error>(())
                 };
 
-                if group_a_read_names.contains(read_name_buf.as_str()) {
+                if group_a_read_names.contains(read_name_buf.as_slice()) {
                     // always include this read. we won't check the rest filters.
                     push_fs_and_weight(group_a_fs_buf, group_a_weight_buf)?;
                 } else {
