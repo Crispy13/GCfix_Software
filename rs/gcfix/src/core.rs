@@ -403,6 +403,7 @@ pub struct WeightedFragmentCollector {
 
 impl WeightedFragmentCollector {
     const NA_WEIGHT: f64 = -1.0;
+    const DEFAULT_CONTIG_NAME_FORMAT: ContigNameFormat = ContigNameFormat::WithChr;
 
     /// `start_len` and `end_len` are inclusive.
     pub fn new(
@@ -413,7 +414,10 @@ impl WeightedFragmentCollector {
         reference_fasta: impl AsRef<Path>,
         threads: usize,
     ) -> Result<Self, Error> {
-        let reference_seq_map = make_ref_seq_map(reference_fasta, ContigNameFormat::WithChr)?;
+        event!(Level::WARN, "Filter logic is not implemented yet.");
+
+        let reference_seq_map =
+            make_ref_seq_map(reference_fasta, Self::DEFAULT_CONTIG_NAME_FORMAT)?;
 
         // build correction_weights_arr
         let correction_weights_arr =
@@ -429,11 +433,11 @@ impl WeightedFragmentCollector {
         })
     }
 
-    fn make_fs_and_correction_weight_arrs(
+    pub fn make_fs_and_correction_weight_arrs(
         &self,
         bam_path: impl AsRef<Path> + Sync + Send,
         region_infos: &[((&str, i64), &HashSet<&[u8]>)],
-    ) -> Result<Vec<(Array2<i32>, Array2<f64>)>, Error> {
+    ) -> Result<Vec<[(Array1<i32>, Array1<f64>); 2]>, Error> {
         let tp = ThreadPoolBuilder::new().num_threads(self.threads).build()?;
 
         let chunk_size = (region_infos.len() / self.threads).min(64).max(1);
@@ -457,21 +461,28 @@ impl WeightedFragmentCollector {
                     let mut res = Vec::with_capacity(chunk.len());
 
                     for &(region, separate_read_names) in chunk {
-                        res.push(worker.make_fs_and_correction_weight_arrs_for_region(
-                            ir,
-                            &self.correction_weights_arr,
-                            region,
-                            separate_read_names,
-                            self.reference_seq_map.get(region.0).ok_or_else(|| {
-                                anyhow!(
-                                    "Contig key not found in reference sequence map: {}",
-                                    region.0
-                                )
-                            })?,
-                            self.start_len,
-                            self.end_len,
-                            self.lag,
-                        )?);
+                        res.push(
+                            worker.make_fs_and_correction_weight_arrs_for_region(
+                                ir,
+                                &self.correction_weights_arr,
+                                region,
+                                separate_read_names,
+                                self.reference_seq_map
+                                    .get(
+                                        &*Self::DEFAULT_CONTIG_NAME_FORMAT
+                                            .contig_name_for_ref(region.0),
+                                    )
+                                    .ok_or_else(|| {
+                                        anyhow!(
+                                            "Contig key not found in reference sequence map: {}",
+                                            region.0
+                                        )
+                                    })?,
+                                self.start_len,
+                                self.end_len,
+                                self.lag,
+                            )?,
+                        );
                     }
 
                     Ok::<_, Error>(res)
@@ -525,7 +536,7 @@ impl WeightedFragmentCollectorWorker {
         }) {
             let plp = pr?;
 
-            if plp.pos() as i64 != pos_0b {
+            if (plp.pos() as i64) < pos_0b {
                 continue;
             }
 
@@ -534,14 +545,17 @@ impl WeightedFragmentCollectorWorker {
 
                 read_name_buf.clear();
                 read_name_buf.extend(record.qname());
-                let suffix = if record.is_first_in_template() { b"/1" } else { b"/2" };
+                let suffix = if record.is_first_in_template() {
+                    b"/1"
+                } else {
+                    b"/2"
+                };
                 read_name_buf.extend(suffix);
 
                 let push_fs_and_weight = |fs_buf: &mut Vec<i32>, weight_buf: &mut Vec<f64>| {
                     let insert_size_abs = record.insert_size().abs();
 
                     let mut weight = WeightedFragmentCollector::NA_WEIGHT;
-
 
                     'weight_calc: {
                         let (ref_start, ref_end) =
@@ -588,10 +602,7 @@ impl WeightedFragmentCollectorWorker {
                             None => break 'weight_calc,
                         };
 
-                        match correction_weights_arr
-                            .get((row_index, gc_content))
-                            .copied()
-                        {
+                        match correction_weights_arr.get((row_index, gc_content)).copied() {
                             Some(v) => weight = v,
                             None => Err(anyhow!(
                                 "Failed to index weight with index: {:?}",
@@ -617,6 +628,8 @@ impl WeightedFragmentCollectorWorker {
                     push_fs_and_weight(group_b_fs_buf, group_b_weight_buf)?;
                 };
             }
+
+            break;
         }
 
         Ok([
@@ -632,7 +645,7 @@ impl WeightedFragmentCollectorWorker {
     }
 
     fn should_record_be_filtered_out(record: &Record) -> bool {
-        todo!()
+        false // TODO
     }
 }
 
