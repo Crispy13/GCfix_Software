@@ -2,13 +2,13 @@ set -e
 
 export LD_LIBRARY_PATH="/home/eck/software/miniconda3/envs/gcfix/lib/"
 
-input_bam="../NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam"
+input_bam="../../NA12878.chrom20.ILLUMINA.bwa.CEU.low_coverage.20121211.bam"
 out_npy="$(basename $input_bam).npy"
 
 cargo build --release
 
 # command time -v \
-# hyperfine --warmup 3 "\
+hyperfine --warmup 3 "\
 cargo run --release -- \
     $input_bam \
     $out_npy \
@@ -16,9 +16,9 @@ cargo run --release -- \
     -s 51 \
     -e 400 \
     -r /home/eck/workspace/common_resources/hg38.fa \
-    -b ../hg38/GC_tagging_bin_locations.csv \
+    -b ../../hg38/GC_tagging_bin_locations.csv \
     -t 8 \
     --lag 10 \
     --log-level DEBUG \
-# "
+"
 # ../Input_Bam/sample1.bam \

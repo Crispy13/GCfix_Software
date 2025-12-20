@@ -525,6 +525,7 @@ dependencies = [
  "clap",
  "crackle-kit",
  "criterion",
+ "memchr",
  "ndarray",
  "numpy",
  "pyo3",

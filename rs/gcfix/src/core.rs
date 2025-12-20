@@ -29,6 +29,8 @@ use rayon::{
     },
 };
 
+use crate::simd_counter::GCATCounter;
+
 #[derive(Clone, Copy, Debug)]
 enum ContigNameFormat {
     WithChr,
@@ -85,6 +87,7 @@ pub struct GCCounter {
     lag: usize,
     bam_path: String,
     contig_name_format: ContigNameFormat,
+    counter: GCATCounter,
 }
 
 impl GCCounter {
@@ -131,6 +134,7 @@ impl GCCounter {
             lag,
             bam_path,
             contig_name_format,
+            counter: GCATCounter::default(),
         })
     }
 
@@ -252,15 +256,7 @@ impl GCCounter {
                 continue;
             }
 
-            let mut gc_cnt = 0;
-            let mut at_cnt = 0;
-            for &b in ref_seq {
-                match Self::GC_TABLE[b as usize] {
-                    1 => gc_cnt += 1,
-                    2 => at_cnt += 1,
-                    _ => {}
-                }
-            }
+            let (gc_cnt, at_cnt) = self.counter.count(ref_seq);
 
             let total_cnt = gc_cnt + at_cnt;
             let valid_percent = total_cnt as f64 / ref_seq.len() as f64;
